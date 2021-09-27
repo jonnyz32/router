@@ -1,2 +1,7 @@
-*
-!*.*
+*.o
+*.d
+*.pcap
+Makefile
+auth_key
+rtable
+sr

@@ -30,6 +30,41 @@
  *
  *---------------------------------------------------------------------*/
 
+#if 0
+  struct sr_arp_hdr {
+    unsigned short  ar_hrd;             /* format of hardware address   */
+    unsigned short  ar_pro;             /* format of protocol address   */
+    unsigned char   ar_hln;             /* length of hardware address   */
+    unsigned char   ar_pln;             /* length of protocol address   */
+    unsigned short  ar_op;              /* ARP opcode (command)         */
+    unsigned char   ar_sha[ETHER_ADDR_LEN];   /* sender hardware address      */
+    uint32_t        ar_sip;             /* sender IP address            */
+    unsigned char   ar_tha[ETHER_ADDR_LEN];   /* target hardware address      */
+    uint32_t        ar_tip;             /* target IP address            */
+} __attribute__ ((packed)) ;
+
+struct sr_icmp_hdr {
+  uint8_t icmp_type;
+  uint8_t icmp_code;
+  uint16_t icmp_sum;
+}
+
+struct sr_ip_hdr {
+    uint8_t ip_tos;			/* type of service */
+    uint16_t ip_len;			/* total length */
+    uint16_t ip_id;			/* identification */
+    uint16_t ip_off;			/* fragment offset field */
+#define IP_RF 0x8000      /* reserved fragment flag */
+#define IP_DF 0x4000      /* dont fragment flag */
+#define IP_MF 0x2000      /* more fragments flag */
+#define IP_OFFMASK 0x1fff /* mask for fragmenting bits */
+    uint8_t ip_ttl;			/* time to live */
+    uint8_t ip_p;			/* protocol */
+    uint16_t ip_sum;			/* checksum */
+    uint32_t ip_src, ip_dst;	/* source and dest address */
+}
+#endif
+
 void sr_init(struct sr_instance *sr)
 {
   /* REQUIRES */
@@ -76,144 +111,52 @@ void sr_handlepacket(struct sr_instance *sr,
   assert(packet);
   assert(interface);
 
+  struct sr_if *current_interface = sr_get_interface(sr, interface);
+
+  /* Assemble ethernet header */
+  sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
+  uint8_t orig_sender[6];
+  memcpy(orig_sender, ehdr->ether_shost, 6);
+  memcpy(&ehdr->ether_dhost, orig_sender, 6);
+  memcpy(&ehdr->ether_shost, current_interface->addr, 6);
+
   /* Check if arp or icmp*/
   uint16_t ethtype = ethertype(packet);
   if (ethtype == ethertype_ip)
   {
-    /* Assemble ethernet header*/
-    sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
-    uint8_t orig_sender[6];
-    memcpy(orig_sender, ehdr->ether_shost, 6);
-    memcpy(&ehdr->ether_dhost, orig_sender, 6);
-
-    struct sr_if *current_interface = sr_get_interface(sr, interface);
-    memcpy(&ehdr->ether_shost, current_interface->addr, 6);
-    /*    struct sr_if *current_interface = sr->if_list;
-    sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-
-    while (current_interface != NULL && current_interface->ip != arp_hdr->ar_tip)
-    {
-      current_interface = current_interface->next;
-    }
-
-    if (current_interface)
-    {
-      memcpy(&ehdr->ether_shost, current_interface->addr, 6);
-    } */
-
     /*Assemble ip header*/
-#if 0
-      uint8_t ip_tos;			/* type of service */
-    uint16_t ip_len;			/* total length */
-    uint16_t ip_id;			/* identification */
-    uint16_t ip_off;			/* fragment offset field */
-#define IP_RF 0x8000      /* reserved fragment flag */
-#define IP_DF 0x4000      /* dont fragment flag */
-#define IP_MF 0x2000      /* more fragments flag */
-#define IP_OFFMASK 0x1fff /* mask for fragmenting bits */
-    uint8_t ip_ttl;			/* time to live */
-    uint8_t ip_p;			/* protocol */
-    uint16_t ip_sum;			/* checksum */
-    uint32_t ip_src, ip_dst;	/* source and dest address */
-#endif
     sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
     uint32_t new_src = iphdr->ip_dst;
     uint32_t new_dst = iphdr->ip_src;
-
     iphdr->ip_src = new_src;
     iphdr->ip_dst = new_dst;
+    iphdr->ip_sum = 0;
+    iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
 
     /*Assemble icmp header*/
     sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
     icmp_hdr->icmp_type = 0;
     icmp_hdr->icmp_code = 0;
-    /*     uint8_t *data = (uint8_t *)(icmp_hdr + 16);
- */
-    icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_icmp_hdr_t) + sizeof(sr_ip_hdr_t), len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_icmp_hdr_t) + sizeof(sr_ip_hdr_t)));
-
-#if 0
-   uint16_t cksum(const void *_data, int len)
-print_hdr_ip(buf + sizeof(sr_ethernet_hdr_t));
-    uint8_t ip_proto = ip_protocol(buf + sizeof(sr_ethernet_hdr_t));
-
-    if (ip_proto == ip_protocol_icmp)
-    { /* ICMP */
-      printf("ip_proto == ip_protocol_icmp\n");
-      minlength += sizeof(sr_icmp_hdr_t);
-      if (length < minlength)
-        fprintf(stderr, "Failed to print ICMP header, insufficient length\n");
-      else
-        print_hdr_icmp(buf + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
-#endif
-
-#if 0
-  struct sr_icmp_hdr {
-  uint8_t icmp_type;
-  uint8_t icmp_code;
-  uint16_t icmp_sum;
-}
-#endif
-    sr_send_packet(sr, packet, len, interface);
+    icmp_hdr->icmp_sum = 0;
+    icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                               len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
   }
-
   else if (ethtype == ethertype_arp)
   {
-    sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
-    uint8_t orig_sender[6];
-    memcpy(orig_sender, ehdr->ether_shost, 6);
-    memcpy(&ehdr->ether_dhost, orig_sender, 6);
+    /* Assemble ARP header */
     sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-    struct sr_if *current_interface = sr->if_list;
-
-    while (current_interface != NULL && current_interface->ip != arp_hdr->ar_tip)
-    {
-      current_interface = current_interface->next;
-    }
-
-    if (current_interface)
-    {
-      memcpy(&ehdr->ether_shost, current_interface->addr, 6);
-      memcpy(&arp_hdr->ar_sha, current_interface->addr, 6);
-    }
-
+    memcpy(&arp_hdr->ar_sha, current_interface->addr, 6);
     arp_hdr->ar_op = htons(arp_op_reply);
-    /*arp_hdr->ar_sip = sr->routing_table.gw.s_addr;*/
     memcpy(&arp_hdr->ar_tha, orig_sender, 6);
     uint32_t new_target_ip = arp_hdr->ar_sip;
     uint32_t new_source_ip = arp_hdr->ar_tip;
-
     arp_hdr->ar_tip = new_target_ip;
     arp_hdr->ar_sip = new_source_ip;
-    sr_send_packet(sr, packet, len, interface);
   }
-
-#if 0
-  struct sr_arp_hdr
-{
-    unsigned short  ar_hrd;             /* format of hardware address   */
-    unsigned short  ar_pro;             /* format of protocol address   */
-    unsigned char   ar_hln;             /* length of hardware address   */
-    unsigned char   ar_pln;             /* length of protocol address   */
-    unsigned short  ar_op;              /* ARP opcode (command)         */
-    unsigned char   ar_sha[ETHER_ADDR_LEN];   /* sender hardware address      */
-    uint32_t        ar_sip;             /* sender IP address            */
-    unsigned char   ar_tha[ETHER_ADDR_LEN];   /* target hardware address      */
-    uint32_t        ar_tip;             /* target IP address            */
-} __attribute__ ((packed)) ;
-
-
-
- 
-
-  sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-
-#endif
+  sr_send_packet(sr, packet, len, interface);
 
   printf("*** -> Received packet of length %d \n", len);
   printf("packet: %x\n", *packet);
   printf("interface: %s\n", interface);
   print_hdrs(packet, len);
-
-  /*   
- */
 } /* end sr_ForwardPacket */

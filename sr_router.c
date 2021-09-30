@@ -120,12 +120,35 @@ void sr_handlepacket(struct sr_instance *sr,
   memcpy(&ehdr->ether_dhost, orig_sender, 6);
   memcpy(&ehdr->ether_shost, current_interface->addr, 6);
 
+  /* Get iphdr and icmp_hdr*/
+  sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+  sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
   /* Check if arp or icmp*/
   uint16_t ethtype = ethertype(packet);
   if (ethtype == ethertype_ip)
   {
+    /*Calculate checksum of request*/
+    
+    uint16_t request_iphdr_checksum_on_send = iphdr->ip_sum; 
+    uint16_t request_icmp_hdr_checksum_on_send = icmp_hdr->icmp_sum; 
+
+    iphdr->ip_sum = 0;
+    icmp_hdr->icmp_sum = 0;
+
+    uint16_t request_iphdr_checksum_on_receive = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t)); 
+    uint16_t request_icmp_hdr_checksum_on_receive = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                               len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+
+
+    if ( request_iphdr_checksum_on_receive != request_iphdr_checksum_on_send ||
+     request_icmp_hdr_checksum_on_send != request_icmp_hdr_checksum_on_receive
+    ){
+      return;
+    }
+
     /*Assemble ip header*/
-    sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+
     uint32_t new_src = iphdr->ip_dst;
     uint32_t new_dst = iphdr->ip_src;
     iphdr->ip_src = new_src;
@@ -134,7 +157,6 @@ void sr_handlepacket(struct sr_instance *sr,
     iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
 
     /*Assemble icmp header*/
-    sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
     icmp_hdr->icmp_type = 0;
     icmp_hdr->icmp_code = 0;
     icmp_hdr->icmp_sum = 0;
@@ -143,8 +165,15 @@ void sr_handlepacket(struct sr_instance *sr,
   }
   else if (ethtype == ethertype_arp)
   {
-    /* Assemble ARP header */
+    /* Checks if an IP->MAC mapping is in the cache. IP is in network byte order. 
+   You must free the returned structure if it is not NULL. */
     sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+/*     struct sr_arpentry *arpentry = sr_arpcache_lookup(&sr->cache, arp_hdr->ar_tip);
+ */    sr_arpcache_insert(&sr->cache, arp_hdr->ar_sha, arp_hdr->ar_sip);
+    sr_arpcache_insert(&sr->cache, arp_hdr->ar_tha, arp_hdr->ar_tip); 
+
+
+    /* Assemble ARP header */
     memcpy(&arp_hdr->ar_sha, current_interface->addr, 6);
     arp_hdr->ar_op = htons(arp_op_reply);
     memcpy(&arp_hdr->ar_tha, orig_sender, 6);

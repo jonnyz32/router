@@ -112,162 +112,6 @@ void sr_init(struct sr_instance *sr)
  *
  *---------------------------------------------------------------------*/
 
-#if 0
-void sr_handlepacket(struct sr_instance *sr,
-                     uint8_t *packet /* lent */,
-                     unsigned int len,
-                     char *interface /* lent */)
-{
-  /* REQUIRES */
-
-  uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  assert(sr);
-  assert(packet);
-  assert(interface);
-
-  /* Get the current interface*/
-  /*   struct sr_if *current_interface = sr_get_interface(sr, interface);
- */
-
-  /* Get iphdr and icmp_hdr*/
-  sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-  sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
-  sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
-
-  /* Check if arp or icmp*/
-  uint16_t ethtype = ethertype(packet);
-  if (ethtype == ethertype_ip && sr_arpcache_lookup(&sr->cache, iphdr->ip_dst) != NULL)
-  {
-    /*Calculate checksum of request*/
-
-    uint16_t request_iphdr_checksum_on_send = iphdr->ip_sum;
-    uint16_t request_icmp_hdr_checksum_on_send = icmp_hdr->icmp_sum;
-
-    iphdr->ip_sum = 0;
-    icmp_hdr->icmp_sum = 0;
-
-    uint16_t request_iphdr_checksum_on_receive = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-    uint16_t request_icmp_hdr_checksum_on_receive = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
-                                                          len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
-
-    if (request_iphdr_checksum_on_receive != request_iphdr_checksum_on_send ||
-        request_icmp_hdr_checksum_on_send != request_icmp_hdr_checksum_on_receive)
-    {
-      return;
-    }
-
-    /*Assemble ip header*/
-
-    uint32_t new_src = iphdr->ip_dst;
-    uint32_t new_dst = iphdr->ip_src;
-    iphdr->ip_src = new_src;
-    iphdr->ip_dst = new_dst;
-    iphdr->ip_sum = 0;
-    iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-
-    /*Assemble icmp header*/
-    icmp_hdr->icmp_type = 0;
-    icmp_hdr->icmp_code = 0;
-    icmp_hdr->icmp_sum = 0;
-    icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
-                               len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
-  }
-  /*   else if (ethtype == ethertype_arp)
- */
-  else
-  {
-
-    /* Create new packet */
-
-    if (ethtype == ethertype_ip)
-    {
-
-      /* Check if target ip is for our interface */
-      uint32_t destination_address = arp_hdr->ar_tip;
-      * /
-
-          void get_matching_interface(struct sr_if * current_interface, )
-              uint32_t first_3_bytes_target_ip = destination_address & 0xFFFFFF;
-      char *interfaces[3] = {"eth1", "eth2", "eth3"};
-      struct sr_if *current_interface;
-
-      /* Get interface that we need to send request too*/
-      int i;
-      for (i = 0; i < 3; i++)
-      {
-        current_interface = sr_get_interface(sr, interfaces[i]);
-        if ((current_interface->ip & 0xFFFFFF) == (first_3_bytes_target_ip))
-        {
-          break;
-        }
-      }
-      uint8_t new_packet[sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t)];
-      sr_ethernet_hdr_t *new_eth = (sr_ethernet_hdr_t *)new_packet;
-      sr_arp_hdr_t *new_arp = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-      memcpy(new_eth->ether_dhost, broadcast, 6);
-      memcpy(new_eth->ether_shost, broadcast, 6);
-    }
-
-    /* Get destination ip address */
-    /*  sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-    uint32_t destination_address = arp_hdr->ar_tip; */
-
-    /* Check if target ip IS ethernet ip*/
-    if (destination_address == current_interface->ip)
-    {
-      /* Assemble ethernet header */
-      sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
-      uint8_t orig_sender[6];
-      memcpy(orig_sender, ehdr->ether_shost, 6);
-      memcpy(&ehdr->ether_dhost, orig_sender, 6);
-      memcpy(&ehdr->ether_shost, current_interface->addr, 6);
-      /*Send response back to mac address where we received the packet from */
-      memcpy(&arp_hdr->ar_sha, current_interface->addr, 6);
-      arp_hdr->ar_op = htons(arp_op_reply);
-      memcpy(&arp_hdr->ar_tha, orig_sender, 6);
-      uint32_t new_target_ip = arp_hdr->ar_sip;
-      uint32_t new_source_ip = arp_hdr->ar_tip;
-      arp_hdr->ar_tip = new_target_ip;
-      arp_hdr->ar_sip = new_source_ip;
-    }
-    else
-    {
-      /* We need to send request from current interface to target ip address*/
-
-      /*  if (target_ip in arpcache, then send reply back to sender){}
-    else { */
-      /* send request to broadcast from our interface */
-
-      sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
-      memcpy(&ehdr->ether_dhost, broadcast, 6);
-      memcpy(&ehdr->ether_shost, current_interface->addr, 6);
-      /*Send response back to mac address where we received the packet from */
-      memcpy(&arp_hdr->ar_sha, current_interface->addr, 6);
-      arp_hdr->ar_op = htons(arp_op_request);
-      memcpy(&arp_hdr->ar_tha, "000000", 6);
-      arp_hdr->ar_tip = destination_address;
-      arp_hdr->ar_sip = current_interface->ip;
-    }
-  }
-
-  /* Checks if an IP->MAC mapping is in the cache. IP is in network byte order. 
-   You must free the returned structure if it is not NULL. */
-  /*     sr_arp_hdr_t *arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
- */
-  /*     struct sr_arpentry *arpentry = sr_arpcache_lookup(&sr->cache, arp_hdr->ar_tip); */
-  /* sr_arpcache_insert(&sr->cache, arp_hdr->ar_sha, arp_hdr->ar_sip);
-    sr_arpcache_insert(&sr->cache, arp_hdr->ar_tha, arp_hdr->ar_tip); 
- */
-
-  sr_send_packet(sr, packet, len, interface);
-
-  printf("*** -> Received packet of length %d \n", len);
-  printf("packet: %x\n", *packet);
-  printf("interface: %s\n", interface);
-  print_hdrs(packet, len);
-} /* end sr_ForwardPacket */
-#endif
-
 struct sr_if *sr_get_interface_with_ip(struct sr_instance *sr, uint32_t destination_ip)
 {
   char *interfaces[3] = {"eth1", "eth2", "eth3"};
@@ -313,9 +157,6 @@ void sr_handlepacket(struct sr_instance *sr,
   printf("PRINTING RECEIVED PACKET\n");
   print_hdrs(packet, len);
 
-  unsigned char broadcast_eth[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  unsigned char broadcast_arp[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-
   struct sr_if *current_interface = sr_get_interface(sr, interface);
   /* Assemble ethernet header */
   sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
@@ -352,7 +193,20 @@ void sr_handlepacket(struct sr_instance *sr,
     else
     {
       /* This is reply, just cache*/
-      sr_arpcache_insert(&sr->cache, arp_hdr->ar_sha, arp_hdr->ar_sip);
+
+      struct sr_arpreq *req = sr_arpcache_insert(&sr->cache, arp_hdr->ar_sha, arp_hdr->ar_sip);
+      struct sr_packet *packet = NULL;
+
+      for (packet = req->packets; packet != NULL; packet = packet->next)
+      {
+        printf("############################################\n##########################################\nABOUT TO SEND PACKET\n############################################\n##########################################\n");
+        print_hdrs(packet->buf, packet->len);
+        sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet->buf;
+        memcpy(&ehdr->ether_dhost, arp_hdr->ar_sha, 6);
+
+        sr_send_packet(sr, packet->buf, packet->len, packet->iface);
+      }
+      sr_arpreq_destroy(&sr->cache, req);
     }
 
     return;
@@ -429,9 +283,13 @@ void sr_handlepacket(struct sr_instance *sr,
         else
         {
           printf("Could not find arpentry for ip address\n");
-          sr_arpcache_queuereq(&sr->cache, destination_ip, packet, len, destination_interface->name);
+          memcpy(&ehdr->ether_shost, destination_interface->addr, 6);
 
-          /* No arpentry in cache, create new arp packet and send it as broadcast*/
+          struct sr_arpreq *request = sr_arpcache_queuereq(&sr->cache, destination_ip, packet, len, destination_interface->name);
+          handle_arpreq(sr, request);
+
+/* No arpentry in cache, create new arp packet and send it as broadcast*/
+#if 0
           uint8_t new_packet[42];
           sr_ethernet_hdr_t *new_eth = (sr_ethernet_hdr_t *)new_packet;
           sr_arp_hdr_t *new_arp = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
@@ -450,6 +308,7 @@ void sr_handlepacket(struct sr_instance *sr,
           new_arp->ar_pln = 4;             /* length of protocol address   */
           print_hdrs(new_packet, 42);
           sr_send_packet(sr, new_packet, 42, destination_interface->name);
+#endif
         }
       }
     }

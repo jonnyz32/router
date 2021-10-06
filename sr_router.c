@@ -21,6 +21,7 @@
 #include "sr_arpcache.h"
 #include "sr_utils.h"
 #include <string.h>
+#include <stdlib.h>
 
 /*---------------------------------------------------------------------
  * Method: sr_init(void)
@@ -112,25 +113,78 @@ void sr_init(struct sr_instance *sr)
  *
  *---------------------------------------------------------------------*/
 
-struct sr_if *sr_get_interface_with_ip(struct sr_instance *sr, uint32_t destination_ip)
+uint8_t *create_icmp_packet(struct sr_instance *sr, int type, int code, struct sr_if *interface, uint32_t org_src_ip)
 {
-  char *interfaces[3] = {"eth1", "eth2", "eth3"};
-  int i = 0;
-  for (i = 0; i < 3; i++)
+  if (type == 11 && code == 0)
   {
-    struct sr_if *interface = sr_get_interface(sr, interfaces[i]);
-    if (interface->ip == destination_ip)
-    {
-      return interface;
-    }
-  }
+    /* This is time to live exceeded packet*/
+    uint8_t *packet = malloc(70 * sizeof(uint8_t));
+    struct sr_arpentry *entry = sr_arpcache_lookup(&sr->cache, org_src_ip);
 
-  return NULL;
+    sr_ethernet_hdr_t *eth = (sr_ethernet_hdr_t *)packet;
+    memcpy(eth->ether_dhost, entry->mac, 6);
+    memcpy(eth->ether_shost, interface->addr, 6);
+    eth->ether_type = htons(ethertype_ip);
+
+    sr_ip_hdr_t *iphdr = (struct sr_ip_hdr *)(sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+    iphdr->ip_dst = org_src_ip;
+    iphdr->ip_src = interface->ip;
+    iphdr->ip_id = 0;
+    iphdr->ip_len = 56;
+    iphdr->ip_off = 0;
+    iphdr->ip_p = htons(ip_protocol_icmp);
+    iphdr->ip_sum = 0;
+    iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
+    /*   iphdr->ip_tos
+ */
+    iphdr->ip_ttl = 255;
+
+    sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+    icmp_hdr->icmp_type = type;
+    icmp_hdr->icmp_code = code;
+    icmp_hdr->icmp_sum = 0;
+    icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                               70 - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+
+    return packet;
+  }
 }
 
 struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32_t destination_ip)
 {
+  struct sr_rt *entry;
+  char *interface;
+  char *default_gateway;
+  uint32_t longest_match_length = 0;
 
+  for (entry = sr->routing_table; entry != NULL; entry = entry->next)
+  {
+    if (entry->dest.s_addr == 0)
+    {
+      default_gateway = entry->interface;
+    }
+    uint32_t gateway_ip = entry->gw.s_addr;
+    uint32_t mask = entry->mask.s_addr;
+    uint32_t network_ip = gateway_ip & mask;
+
+    if (~(~network_ip ^ destination_ip) == 0)
+    {
+      /* Entry matches*/
+      if (mask > longest_match_length)
+      {
+        longest_match_length = mask;
+        interface = entry->interface;
+      }
+    }
+  }
+  return longest_match_length > 0 ? sr_get_interface(sr, interface) : sr_get_interface(sr, default_gateway);
+}
+
+#if 0
+struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32_t destination_ip)
+{
+  /* sr->routing_table->dest;
+  sr->routing_table->mask; */
   uint32_t first_3_bytes_target_ip = destination_ip & 0xFFFFFF;
   char *interfaces[3] = {"eth1", "eth2", "eth3"};
   struct sr_if *current_interface;
@@ -147,11 +201,29 @@ struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32
   }
   return NULL;
 }
+#endif
+
+struct sr_if *sr_get_interface_with_ip(struct sr_instance *sr, uint32_t destination_ip)
+{
+  char *interfaces[3] = {"eth1", "eth2", "eth3"};
+  int i = 0;
+  for (i = 0; i < 3; i++)
+  {
+    struct sr_if *interface = sr_get_interface(sr, interfaces[i]);
+    if (interface->ip == destination_ip)
+    {
+      return interface;
+    }
+  }
+
+  return NULL;
+}
 
 void sr_handlepacket(struct sr_instance *sr,
                      uint8_t *packet /* lent */,
                      unsigned int len,
                      char *interface /* lent */)
+
 {
 
   printf("PRINTING RECEIVED PACKET\n");
@@ -217,6 +289,20 @@ void sr_handlepacket(struct sr_instance *sr,
 
     /*Assemble icmp header*/
     sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+    sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+
+    if (iphdr->ip_p == 6 || iphdr->ip_p == 17)
+    {
+      /* This is tcp/udp, send port unreachable */
+      iphdr->ip_dst = iphdr->ip_src;
+      iphdr->ip_src = current_interface->ip;
+
+      icmp_hdr->icmp_type = 3;
+      icmp_hdr->icmp_code = 3;
+      sr_send_packet(sr, packet, len, interface);
+      return;
+    }
+
     /*     icmp_hdr->icmp_type = 0;
  */
     icmp_hdr->icmp_code = 0;
@@ -225,7 +311,6 @@ void sr_handlepacket(struct sr_instance *sr,
                                len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
 
     /* ethtype is ip_packet*/
-    sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
     uint32_t destination_ip = iphdr->ip_dst;
     struct sr_if *destination_interface;
     if ((destination_interface = sr_get_interface_with_ip(sr, destination_ip)) != NULL)
@@ -251,6 +336,15 @@ void sr_handlepacket(struct sr_instance *sr,
       {
         /* Could not get match, send icmp unreachable*/
         printf("Could not get destination interface match\n");
+        /* Eth header is already set to send to source host*/
+
+        iphdr->ip_dst = iphdr->ip_src;
+        iphdr->ip_src = current_interface->ip;
+        icmp_hdr->icmp_type = 3;
+        icmp_hdr->icmp_code = 0;
+        print_hdrs(packet, len);
+        sr_send_packet(sr, packet, len, interface);
+
         return;
       }
       else
@@ -278,6 +372,20 @@ void sr_handlepacket(struct sr_instance *sr,
           iphdr->ip_sum = 0;
           iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
           print_hdrs(packet, len);
+
+          /* Check if ttl is 0, and if yes, then send time exceeded*/
+          if (iphdr->ip_ttl < 1)
+          {
+            printf("###########################################3\nTIME TO LIVE IS 0\n######################################\n");
+            printf("Sending time exceeded\n");
+            uint8_t *new_packet = create_icmp_packet(sr, 11, 0, current_interface, iphdr->ip_src);
+
+            print_hdrs(new_packet, len);
+            sr_send_packet(sr, new_packet, 70, current_interface->name);
+            free(new_packet);
+            return;
+          }
+
           sr_send_packet(sr, packet, len, destination_interface->name);
         }
         else

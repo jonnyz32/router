@@ -30,6 +30,7 @@ void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *request)
 {
     unsigned char broadcast_eth[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     unsigned char broadcast_arp[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
     time_t now;
     time(&now);
     if (difftime(now, request->sent) > 1.0)
@@ -38,6 +39,28 @@ void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *request)
         {
             /* send icmp host unreachable to source addr of all pkts waiting
                  on this request */
+            struct sr_packet *packet = NULL;
+            for (packet = request->packets; packet != NULL; packet = packet->next)
+            {
+                sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
+                sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+                sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
+                struct sr_if *current_interface = sr_get_interface(sr, packet->iface);
+
+                uint8_t orig_sender[6];
+                memcpy(orig_sender, ehdr->ether_shost, 6);
+                memcpy(&ehdr->ether_dhost, orig_sender, 6);
+                memcpy(&ehdr->ether_shost, current_interface->addr, 6);
+
+                iphdr->ip_dst = iphdr->ip_src;
+                iphdr->ip_src = current_interface->ip;
+
+                icmp_hdr->icmp_type = 3;
+                icmp_hdr->icmp_code = 1;
+
+                sr_send_packet(sr, packet->buf, packet->len, packet->iface);
+            }
             sr_arpreq_destroy(&sr->cache, request);
         }
         else

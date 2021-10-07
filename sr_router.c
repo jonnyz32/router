@@ -150,6 +150,7 @@ uint8_t *create_icmp_packet(struct sr_instance *sr, int type, int code, struct s
   }
 }
 
+#if 0
 struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32_t destination_ip)
 {
   struct sr_rt *entry;
@@ -179,8 +180,8 @@ struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32
   }
   return longest_match_length > 0 ? sr_get_interface(sr, interface) : sr_get_interface(sr, default_gateway);
 }
+#endif
 
-#if 0
 struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32_t destination_ip)
 {
   /* sr->routing_table->dest;
@@ -201,7 +202,6 @@ struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32
   }
   return NULL;
 }
-#endif
 
 struct sr_if *sr_get_interface_with_ip(struct sr_instance *sr, uint32_t destination_ip)
 {
@@ -286,6 +286,7 @@ void sr_handlepacket(struct sr_instance *sr,
   else
   {
     printf("This is an icmp packet\n");
+    print_hdrs(packet, len);
 
     /*Assemble icmp header*/
     sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
@@ -299,6 +300,8 @@ void sr_handlepacket(struct sr_instance *sr,
 
       icmp_hdr->icmp_type = 3;
       icmp_hdr->icmp_code = 3;
+      iphdr->ip_ttl -= 1;
+
       sr_send_packet(sr, packet, len, interface);
       return;
     }
@@ -322,7 +325,6 @@ void sr_handlepacket(struct sr_instance *sr,
       iphdr->ip_ttl -= 1;
       iphdr->ip_sum = 0;
       iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-      print_hdrs(packet, len);
       sr_send_packet(sr, packet, len, interface);
       return;
     }
@@ -337,12 +339,12 @@ void sr_handlepacket(struct sr_instance *sr,
         /* Could not get match, send icmp unreachable*/
         printf("Could not get destination interface match\n");
         /* Eth header is already set to send to source host*/
+        iphdr->ip_ttl -= 1;
 
         iphdr->ip_dst = iphdr->ip_src;
         iphdr->ip_src = current_interface->ip;
         icmp_hdr->icmp_type = 3;
         icmp_hdr->icmp_code = 0;
-        print_hdrs(packet, len);
         sr_send_packet(sr, packet, len, interface);
 
         return;
@@ -371,7 +373,6 @@ void sr_handlepacket(struct sr_instance *sr,
           iphdr->ip_ttl -= 1;
           iphdr->ip_sum = 0;
           iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-          print_hdrs(packet, len);
 
           /* Check if ttl is 0, and if yes, then send time exceeded*/
           if (iphdr->ip_ttl < 1)
@@ -380,7 +381,6 @@ void sr_handlepacket(struct sr_instance *sr,
             printf("Sending time exceeded\n");
             uint8_t *new_packet = create_icmp_packet(sr, 11, 0, current_interface, iphdr->ip_src);
 
-            print_hdrs(new_packet, len);
             sr_send_packet(sr, new_packet, 70, current_interface->name);
             free(new_packet);
             return;
@@ -390,33 +390,13 @@ void sr_handlepacket(struct sr_instance *sr,
         }
         else
         {
+          iphdr->ip_ttl -= 1;
+
           printf("Could not find arpentry for ip address\n");
           memcpy(&ehdr->ether_shost, destination_interface->addr, 6);
 
           struct sr_arpreq *request = sr_arpcache_queuereq(&sr->cache, destination_ip, packet, len, destination_interface->name);
           handle_arpreq(sr, request);
-
-/* No arpentry in cache, create new arp packet and send it as broadcast*/
-#if 0
-          uint8_t new_packet[42];
-          sr_ethernet_hdr_t *new_eth = (sr_ethernet_hdr_t *)new_packet;
-          sr_arp_hdr_t *new_arp = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-          memcpy(new_eth->ether_dhost, broadcast_eth, 6);
-          memcpy(new_eth->ether_shost, destination_interface->addr, 6);
-          new_eth->ether_type = htons(ethertype_arp);
-
-          memcpy(&new_arp->ar_sha, destination_interface->addr, 6);
-          new_arp->ar_op = htons(arp_op_request);
-          memcpy(&new_arp->ar_tha, broadcast_arp, 6);
-          new_arp->ar_tip = destination_ip;
-          new_arp->ar_sip = destination_interface->ip;
-          new_arp->ar_hrd = htons(0x0001); /* format of hardware address   */
-          new_arp->ar_pro = htons(0x0800); /* format of protocol address   */
-          new_arp->ar_hln = 6;             /* length of hardware address   */
-          new_arp->ar_pln = 4;             /* length of protocol address   */
-          print_hdrs(new_packet, 42);
-          sr_send_packet(sr, new_packet, 42, destination_interface->name);
-#endif
         }
       }
     }

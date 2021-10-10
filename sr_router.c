@@ -224,6 +224,8 @@ void forward_packet(struct sr_instance *sr, uint8_t *packet, struct sr_if *sourc
 void create_icmp_packet(struct sr_instance *sr, int type, int code, char *interface_to_send_from, uint32_t new_dest_ip, uint8_t *new_dest_mac, uint8_t *received_packet)
 {
 
+  sr_ethernet_hdr_t *rec_eth_hdr = (sr_ethernet_hdr_t *)(received_packet);
+
   sr_ip_hdr_t *rec_ip_hdr = (sr_ip_hdr_t *)(received_packet + sizeof(sr_ethernet_hdr_t));
 
   unsigned int len = 0;
@@ -234,21 +236,49 @@ void create_icmp_packet(struct sr_instance *sr, int type, int code, char *interf
   icmp_hdr->icmp_type = type;
   icmp_hdr->icmp_code = code;
   memcpy(icmp_hdr->data, rec_ip_hdr, 30);
-  icmp_hdr->icmp_sum = 0;
-  icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
-                             len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
 
   struct sr_if *interface = sr_get_interface(sr, interface_to_send_from);
   /*   struct sr_arpentry *entry = sr_arpcache_lookup(&sr->cache, new_dest_ip);
  */
   sr_ethernet_hdr_t *eth = (sr_ethernet_hdr_t *)packet;
-  memcpy(eth->ether_dhost, new_dest_mac, 6);
-  memcpy(eth->ether_shost, interface->addr, 6);
+
+  if (type == 3 && code == 3)
+  {
+    memcpy(eth->ether_dhost, rec_eth_hdr->ether_shost, 6);
+    memcpy(eth->ether_shost, rec_eth_hdr->ether_dhost, 6);
+  }
+  else
+  {
+    memcpy(eth->ether_dhost, new_dest_mac, 6);
+    memcpy(eth->ether_shost, interface->addr, 6);
+  }
+
   eth->ether_type = htons(ethertype_ip);
 
   sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-  iphdr->ip_dst = new_dest_ip;
-  iphdr->ip_src = interface->ip;
+
+  if (type == 3 && code == 3)
+  {
+    iphdr->ip_src = rec_ip_hdr->ip_dst;
+    iphdr->ip_dst = rec_ip_hdr->ip_src;
+  }
+  else
+  {
+    printf("INTERFACE->IP IS:");
+    print_addr_ip_int(interface->ip);
+
+    printf("IPHDR->SRC->IP IS:");
+    print_addr_ip_int(iphdr->ip_src);
+
+    iphdr->ip_dst = new_dest_ip;
+    iphdr->ip_src = interface->ip;
+    printf("INTERFACE->IP IS:");
+    print_addr_ip_int(interface->ip);
+
+    printf("IPHDR->SRC->IP IS:");
+    print_addr_ip_int(iphdr->ip_src);
+  }
+
   iphdr->ip_tos = rec_ip_hdr->ip_tos;
   iphdr->ip_v = rec_ip_hdr->ip_v;
   iphdr->ip_hl = rec_ip_hdr->ip_hl;
@@ -262,6 +292,9 @@ void create_icmp_packet(struct sr_instance *sr, int type, int code, char *interf
   iphdr->ip_sum = 0;
 
   iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
+  icmp_hdr->icmp_sum = 0;
+  icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                             len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
 
   print_hdrs(packet, len);
   sr_send_packet(sr, packet, len, interface->name);

@@ -11,6 +11,9 @@
 #include "sr_if.h"
 #include "sr_protocol.h"
 
+void print_hdrs(uint8_t *buf, uint32_t length);
+uint16_t cksum(const void *_data, int len);
+
 /* 
   This function gets called every second. For each request sent out, we keep
   checking whether we should resend an request or destroy the arp request.
@@ -38,6 +41,34 @@ void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *request)
         {
             /* send icmp host unreachable to source addr of all pkts waiting
                  on this request */
+            struct sr_packet *packet = NULL;
+            for (packet = request->packets; packet != NULL; packet = packet->next)
+            {
+                sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet->buf;
+                sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet->buf + sizeof(sr_ethernet_hdr_t));
+                sr_icmp_t3_hdr_t *icmp_hdr = (sr_icmp_t3_hdr_t *)(packet->buf + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
+                struct sr_if *current_interface = sr_get_interface_with_longest_match(sr, iphdr->ip_src);
+
+                /*              struct sr_if *current_interface = sr_get_interface(sr, packet->iface);
+ */
+                uint8_t orig_sender[6];
+                memcpy(orig_sender, ehdr->ether_shost, 6);
+                memcpy(&ehdr->ether_dhost, orig_sender, 6);
+                memcpy(&ehdr->ether_shost, current_interface->addr, 6);
+
+                iphdr->ip_dst = iphdr->ip_src;
+                iphdr->ip_src = current_interface->ip;
+
+                icmp_hdr->icmp_type = 3;
+                icmp_hdr->icmp_code = 1;
+
+                icmp_hdr->icmp_sum = 0;
+                icmp_hdr->icmp_sum = cksum(packet->buf + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                                           packet->len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+                print_hdrs(packet->buf, packet->len);
+                sr_send_packet(sr, packet->buf, packet->len, current_interface->name);
+            }
             sr_arpreq_destroy(&sr->cache, request);
         }
         else

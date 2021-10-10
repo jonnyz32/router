@@ -145,11 +145,10 @@ struct sr_if *sr_get_interface_with_longest_match(struct sr_instance *sr, uint32
   return longest_match_length > 0 ? sr_get_interface(sr, interface) : sr_get_interface(sr, default_gateway);
 }
 
-int sanity_check_packet(struct sr_instance *sr, uint8_t *packet, unsigned int len)
+int sanity_check_packet(struct sr_instance *sr, uint8_t *packet, unsigned int len, int needs_forwarding)
 {
   /* Return -1 if the packet has a problem, 1 if the packet is good*/
   sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-  sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
   if (len > 1500 || len < 20)
   {
     printf("Discarding packet. Packet length: %u\n", len);
@@ -157,37 +156,48 @@ int sanity_check_packet(struct sr_instance *sr, uint8_t *packet, unsigned int le
   }
 
   uint16_t ip_cksum_recieved = iphdr->ip_sum;
-  uint16_t icmp_cksum_recieved = icmp_hdr->icmp_sum;
-
   iphdr->ip_sum = 0;
-  icmp_hdr->icmp_sum = 0;
-
   uint16_t ip_cksum_new = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-  uint16_t icmp_cksum_new = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
-                                  len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
-
   if (ip_cksum_new != ip_cksum_recieved)
   {
     printf("Discarding packet. Ip checksum is incorrect\n");
     return -1;
   }
-  if (icmp_cksum_new != icmp_cksum_recieved)
+
+  if (iphdr->ip_p == 1)
   {
-    printf("Discarding packet. Icmp checksum is incorrect\n");
-    return -1;
+    sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+    uint16_t icmp_cksum_recieved = icmp_hdr->icmp_sum;
+    icmp_hdr->icmp_sum = 0;
+    uint16_t icmp_cksum_new = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                                    len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+
+    if (icmp_cksum_new != icmp_cksum_recieved)
+    {
+      printf("Discarding packet. Icmp checksum is incorrect\n");
+      return -1;
+    }
   }
 
   iphdr->ip_ttl -= 1;
-  if (iphdr->ip_ttl == 0)
+  if (needs_forwarding == 1 && iphdr->ip_ttl == 0)
   {
     printf("Discarding packet. TTL is 0\n");
     struct sr_if *interface_to_send_message_back_from = sr_get_interface_with_longest_match(sr, iphdr->ip_src);
     create_icmp_packet(sr, 11, 0, interface_to_send_message_back_from->name, iphdr->ip_src);
     return -1;
   }
+  iphdr->ip_sum = 0;
   iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-  icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
-                             len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+
+  if (iphdr->ip_p == 1)
+  {
+    sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
+    icmp_hdr->icmp_sum = 0;
+    icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                               len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+  }
 
   return 1;
 }
@@ -195,7 +205,8 @@ int sanity_check_packet(struct sr_instance *sr, uint8_t *packet, unsigned int le
 void forward_packet(struct sr_instance *sr, uint8_t *packet, struct sr_if *source_interface, struct sr_arpentry *arpentry, unsigned int len)
 {
   sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
-  if (sanity_check_packet(sr, packet, len) == -1)
+
+  if (sanity_check_packet(sr, packet, len, 1) == -1)
   {
     return;
   }
@@ -210,41 +221,55 @@ void forward_packet(struct sr_instance *sr, uint8_t *packet, struct sr_if *sourc
 void create_icmp_packet(struct sr_instance *sr, int type, int code, char *interface_to_send_from, uint32_t new_dest_ip)
 {
 
+  unsigned int len = 0;
+  uint8_t *packet = NULL;
+  if (type == 3 && code == 3)
+  {
+    unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t);
+    uint8_t *packet = malloc(len * sizeof(uint8_t));
+
+    sr_icmp_t3_hdr_t *icmp_hdr = (sr_icmp_t3_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+    icmp_hdr->icmp_type = type;
+    icmp_hdr->icmp_code = code;
+    icmp_hdr->icmp_sum = 0;
+    icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                               len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
+  }
   if (type == 11 && code == 0)
   {
-    unsigned int len = 70;
-    struct sr_if *interface = sr_get_interface(sr, interface_to_send_from);
-    uint8_t *packet = malloc(70 * sizeof(uint8_t));
-    struct sr_arpentry *entry = sr_arpcache_lookup(&sr->cache, new_dest_ip);
-
-    sr_ethernet_hdr_t *eth = (sr_ethernet_hdr_t *)packet;
-    memcpy(eth->ether_dhost, entry->mac, 6);
-    memcpy(eth->ether_shost, interface->addr, 6);
-    eth->ether_type = htons(ethertype_ip);
-
-    sr_ip_hdr_t *iphdr = (struct sr_ip_hdr *)(sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-    iphdr->ip_dst = new_dest_ip;
-    iphdr->ip_src = interface->ip;
-    iphdr->ip_id = 0;
-    iphdr->ip_len = 56;
-    iphdr->ip_off = 0;
-    iphdr->ip_p = htons(ip_protocol_icmp);
-    iphdr->ip_sum = 0;
-    iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-    /*   iphdr->ip_tos
- */
-    iphdr->ip_ttl = 255;
+    unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t);
+    uint8_t *packet = malloc(len * sizeof(uint8_t));
 
     sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
     icmp_hdr->icmp_type = type;
     icmp_hdr->icmp_code = code;
     icmp_hdr->icmp_sum = 0;
     icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
-                               70 - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
-
-    print_hdrs(packet, len);
-    sr_send_packet(sr, packet, len, interface->name);
+                               len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
   }
+  struct sr_if *interface = sr_get_interface(sr, interface_to_send_from);
+  struct sr_arpentry *entry = sr_arpcache_lookup(&sr->cache, new_dest_ip);
+
+  sr_ethernet_hdr_t *eth = (sr_ethernet_hdr_t *)packet;
+  memcpy(eth->ether_dhost, entry->mac, 6);
+  memcpy(eth->ether_shost, interface->addr, 6);
+  eth->ether_type = htons(ethertype_ip);
+
+  sr_ip_hdr_t *iphdr = (struct sr_ip_hdr *)(sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+  iphdr->ip_dst = new_dest_ip;
+  iphdr->ip_src = interface->ip;
+  iphdr->ip_id = 0;
+  iphdr->ip_len = 56;
+  iphdr->ip_off = 0;
+  iphdr->ip_p = htons(ip_protocol_icmp);
+  iphdr->ip_sum = 0;
+  iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
+  /*   iphdr->ip_tos
+ */
+  iphdr->ip_ttl = 255;
+
+  print_hdrs(packet, len);
+  sr_send_packet(sr, packet, len, interface->name);
 }
 
 struct sr_if *sr_get_interface_with_ip(struct sr_instance *sr, uint32_t destination_ip)
@@ -267,6 +292,13 @@ void send_icmp_reply(struct sr_instance *sr, uint8_t *packet, uint32_t new_src, 
 
   sr_ethernet_hdr_t *ehdr = (sr_ethernet_hdr_t *)packet;
   sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+  sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
+  if (sanity_check_packet(sr, packet, len, 0) == -1)
+  {
+    return;
+  }
+
   struct sr_if *current_interface = sr_get_interface(sr, interface);
 
   uint8_t orig_sender[6];
@@ -276,8 +308,13 @@ void send_icmp_reply(struct sr_instance *sr, uint8_t *packet, uint32_t new_src, 
 
   iphdr->ip_dst = new_dst;
   iphdr->ip_src = new_src;
+  iphdr->ip_ttl = 64;
   iphdr->ip_sum = 0;
   iphdr->ip_sum = cksum(packet + sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
+  icmp_hdr->icmp_type = 0;
+  icmp_hdr->icmp_sum = 0;
+  icmp_hdr->icmp_sum = cksum(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+                             len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)));
   print_hdrs(packet, len);
   sr_send_packet(sr, packet, len, interface);
 }
@@ -320,6 +357,12 @@ void handle_ip_packet(struct sr_instance *sr, uint8_t *packet, char *interface, 
   /* If ip is destined for this interface, send back icmp reply */
   {
     printf("Icmp packet destination is our interface\n");
+    if (iphdr->ip_p == 6 || iphdr->ip_p == 17)
+    {
+      /* Send port unreachable if tcp or udp packet*/
+      create_icmp_packet(sr, 3, 3, interface, iphdr->ip_src);
+    }
+
     send_icmp_reply(sr, packet, destination_interface->ip, iphdr->ip_src, len, interface);
     return;
   }

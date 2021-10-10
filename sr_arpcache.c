@@ -11,8 +11,33 @@
 #include "sr_if.h"
 #include "sr_protocol.h"
 
+unsigned char broadcast_eth[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+unsigned char broadcast_arp[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 void print_hdrs(uint8_t *buf, uint32_t length);
 uint16_t cksum(const void *_data, int len);
+
+void send_arp_request(struct sr_instance *sr, struct sr_if *destination_interface, uint32_t tip)
+{
+    uint8_t new_packet[42];
+    sr_ethernet_hdr_t *new_eth = (sr_ethernet_hdr_t *)new_packet;
+    sr_arp_hdr_t *new_arp = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
+    memcpy(new_eth->ether_dhost, broadcast_eth, 6);
+    memcpy(new_eth->ether_shost, destination_interface->addr, 6);
+    new_eth->ether_type = htons(ethertype_arp);
+
+    memcpy(&new_arp->ar_sha, destination_interface->addr, 6);
+    new_arp->ar_op = htons(arp_op_request);
+    memcpy(&new_arp->ar_tha, broadcast_arp, 6);
+    new_arp->ar_tip = tip;
+    new_arp->ar_sip = destination_interface->ip;
+    new_arp->ar_hrd = htons(0x0001); /* format of hardware address   */
+    new_arp->ar_pro = htons(0x0800); /* format of protocol address   */
+    new_arp->ar_hln = 6;             /* length of hardware address   */
+    new_arp->ar_pln = 4;             /* length of protocol address   */
+                                     /*         print_hdrs(new_packet, 42);
+ */
+    sr_send_packet(sr, new_packet, 42, destination_interface->name);
+}
 
 /* 
   This function gets called every second. For each request sent out, we keep
@@ -31,8 +56,7 @@ void sr_arpcache_sweepreqs(struct sr_instance *sr)
 
 void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *request)
 {
-    unsigned char broadcast_eth[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    unsigned char broadcast_arp[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
     time_t now;
     time(&now);
     if (difftime(now, request->sent) > 1.0)
@@ -76,26 +100,7 @@ void handle_arpreq(struct sr_instance *sr, struct sr_arpreq *request)
             struct sr_if *destination_interface = sr_get_interface_with_longest_match(sr, request->ip);
 
             /* Send arp request*/
-            uint8_t new_packet[42];
-            sr_ethernet_hdr_t *new_eth = (sr_ethernet_hdr_t *)new_packet;
-            sr_arp_hdr_t *new_arp = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-            memcpy(new_eth->ether_dhost, broadcast_eth, 6);
-            memcpy(new_eth->ether_shost, destination_interface->addr, 6);
-            new_eth->ether_type = htons(ethertype_arp);
-
-            memcpy(&new_arp->ar_sha, destination_interface->addr, 6);
-            new_arp->ar_op = htons(arp_op_request);
-            memcpy(&new_arp->ar_tha, broadcast_arp, 6);
-            new_arp->ar_tip = request->ip;
-            new_arp->ar_sip = destination_interface->ip;
-            new_arp->ar_hrd = htons(0x0001); /* format of hardware address   */
-            new_arp->ar_pro = htons(0x0800); /* format of protocol address   */
-            new_arp->ar_hln = 6;             /* length of hardware address   */
-            new_arp->ar_pln = 4;             /* length of protocol address   */
-                                             /*         print_hdrs(new_packet, 42);
- */
-            sr_send_packet(sr, new_packet, 42, destination_interface->name);
-
+            send_arp_request(sr, destination_interface, request->ip);
             time(&now);
 
             request->sent = now;
